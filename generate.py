@@ -100,7 +100,8 @@ class MusicGeneration:
         self.next_note = np.zeros((NUM_NOTES, NOTE_UNITS))
         return self.results[-1]
 
-
+def linear_interpolate(v1, v2, alpha):
+    return (1 - alpha) * np.array(v1) + alpha * np.array(v2)
 
 def apply_temperature(prob, temperature):
     """
@@ -124,21 +125,22 @@ def process_inputs(ins):
     ins = [np.array(i) for i in ins]
     return ins
 
-def generate(models, num_bars, styles):
+def generate(models, num_bars, start_style, end_style):
     """
     orchestrate the entire generation process over a specified number of bars, using the models to predict and choose notes sequentially
     """
-
-    print('Generating with styles:', styles)
 
     # unpack `models` tuple for generating temporal features and notes, respectively
     _, time_model, note_model = models
 
     # create a list of objects for each style
-    generations = [MusicGeneration(style) for style in styles]
+    generations = [MusicGeneration(start_style)]
 
     # loop over the number of notes specified by the number of bars
     for t in tqdm(range(NOTES_PER_BAR * num_bars)):
+        style_t = linear_interpolate(start_style, end_style, t / (NOTES_PER_BAR * num_bars - 1))
+        for g in generations:
+            g.style_memory.append(style_t)
         # for each timestep, each object prepares inputs (note-invariant features) needed for predicting temporal features
         ins = process_inputs([g.build_time_inputs() for g in generations])
         # predict temporal features
@@ -171,13 +173,12 @@ def write_file(name, results):
     results = zip(*list(results))
 
     for i, result in enumerate(results):
+        print(len(result), result[-1].shape)
         fpath = os.path.join(SAMPLES_DIR, name + '_' + str(i) + '.mid')
         print('Writing file', fpath)
         os.makedirs(os.path.dirname(fpath), exist_ok=True)
         mf = midi_encode(unclamp_midi(result))
         midi.write_midifile(fpath, mf)
-
-
 
 def main():
     """
@@ -186,19 +187,19 @@ def main():
 
     parser = argparse.ArgumentParser(description='Generates music.')
     parser.add_argument('--bars', default=32, type=int, help='Number of bars to generate')
-    parser.add_argument('--styles', default=None, type=int, nargs='+', help='Styles to mix together')
+    parser.add_argument('--start_styles', type=int, nargs='+', help='Starting style indices')
+    parser.add_argument('--end_styles', type=int, nargs='+', help='Ending style indices')
     args = parser.parse_args()
 
     models = build_or_load()
 
     # create a one-hot encoded vector for each style index, then take the mean of all the styles, resulting in a new vector where each element is the average of the corresponding elements in all the input vectors
     # contain no specific logic to handle or remove duplicates before averaging
-    if args.styles:
-        styles = [np.mean([one_hot(i, NUM_STYLES) for i in args.styles], axis=0)]
-    else:
-        styles = [compute_genre(i) for i in range(len(genre))]
 
-    write_file('output', generate(models, args.bars, styles))
+    start_style = np.mean([one_hot(i, NUM_STYLES) for i in args.start_styles], axis=0)
+    end_style = np.mean([one_hot(i, NUM_STYLES) for i in args.end_styles], axis=0)
+
+    write_file('output', generate(models, args.bars, start_style, end_style))
 
 if __name__ == '__main__':
     main()
