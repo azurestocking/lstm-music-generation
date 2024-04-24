@@ -10,26 +10,39 @@ from dataset import *
 from tqdm import tqdm
 from midi_util import midi_encode
 
+
+
 class MusicGeneration:
     """
-    Represents a music generation
+    encapsulate the logic for maintaining state and generating music based on the model outputs,
+    use deque structures for memory of past notes, beats, and style attributes, which helps in providing context for each new generated piece of music
     """
+
     def __init__(self, style, default_temp=1):
+        """
+        initialize memories for notes, beats, and styles, and sets up the generation state
+        """
+
         self.notes_memory = deque([np.zeros((NUM_NOTES, NOTE_UNITS)) for _ in range(SEQ_LEN)], maxlen=SEQ_LEN)
         self.beat_memory = deque([np.zeros(NOTES_PER_BAR) for _ in range(SEQ_LEN)], maxlen=SEQ_LEN)
         self.style_memory = deque([style for _ in range(SEQ_LEN)], maxlen=SEQ_LEN)
 
-        # The next note being built
+        # next note being built
         self.next_note = np.zeros((NUM_NOTES, NOTE_UNITS))
         self.silent_time = NOTES_PER_BAR
 
-        # The outputs
+        # outputs
         self.results = []
-        # The temperature
+
+        # temperature
         self.default_temp = default_temp
         self.temperature = default_temp
 
     def build_time_inputs(self):
+        """
+        prepare the input set from current memories for the time model
+        """
+
         return (
             np.array(self.notes_memory),
             np.array(self.beat_memory),
@@ -37,7 +50,11 @@ class MusicGeneration:
         )
 
     def build_note_inputs(self, note_features):
-        # Timesteps = 1 (No temporal dimension)
+        """
+        prepare the input set from current memories for the note model
+        """
+
+        # timesteps = 1 (no temporal dimension)
         return (
             np.array(note_features),
             np.array([self.next_note]),
@@ -45,23 +62,28 @@ class MusicGeneration:
         )
 
     def choose(self, prob, n):
+        """
+        decide on the next note based on the probability distribution provided by the model
+        """
+
         vol = prob[n, -1]
         prob = apply_temperature(prob[n, :-1], self.temperature)
 
-        # Flip notes randomly
+        # flip notes randomly
         if np.random.random() <= prob[0]:
             self.next_note[n, 0] = 1
-            # Apply volume
+            # apply volume
             self.next_note[n, 2] = vol
-            # Flip articulation
+            # flip articulation
             if np.random.random() <= prob[1]:
                 self.next_note[n, 1] = 1
 
     def end_time(self, t):
         """
-        Finish generation for this time step.
+        finish generation for the current time step, adjust temperature based on activity, and update memories
         """
-        # Increase temperature while silent.
+
+        # increase temperature while silent
         if np.count_nonzero(self.next_note) == 0:
             self.silent_time += 1
             if self.silent_time >= NOTES_PER_BAR:
@@ -71,59 +93,81 @@ class MusicGeneration:
             self.temperature = self.default_temp
 
         self.notes_memory.append(self.next_note)
-        # Consistent with dataset representation
+        # consistent with dataset representation
         self.beat_memory.append(compute_beat(t, NOTES_PER_BAR))
         self.results.append(self.next_note)
-        # Reset next note
+        # reset next note
         self.next_note = np.zeros((NUM_NOTES, NOTE_UNITS))
         return self.results[-1]
 
+
+
 def apply_temperature(prob, temperature):
     """
-    Applies temperature to a sigmoid vector.
+    apply temperature to a sigmoid vector
     """
-    # Apply temperature
+
+    # apply temperature
     if temperature != 1:
-        # Inverse sigmoid
+        # inverse sigmoid
         x = -np.log(1 / prob - 1)
-        # Apply temperature to sigmoid function
+        # apply temperature to sigmoid function
         prob = 1 / (1 + np.exp(-x / temperature))
     return prob
 
 def process_inputs(ins):
+    """
+    standardize the way inputs are formatted before being fed into the model
+    """
+
     ins = list(zip(*ins))
     ins = [np.array(i) for i in ins]
     return ins
 
 def generate(models, num_bars, styles):
+    """
+    orchestrate the entire generation process over a specified number of bars, using the models to predict and choose notes sequentially
+    """
+
     print('Generating with styles:', styles)
 
+    # unpack `models` tuple for generating temporal features and notes, respectively
     _, time_model, note_model = models
+
+    # create a list of objects for each style
     generations = [MusicGeneration(style) for style in styles]
 
+    # loop over the number of notes specified by the number of bars
     for t in tqdm(range(NOTES_PER_BAR * num_bars)):
-        # Produce note-invariant features
+        # for each timestep, each object prepares inputs (note-invariant features) needed for predicting temporal features
         ins = process_inputs([g.build_time_inputs() for g in generations])
-        # Pick only the last time step
+        # predict temporal features
         note_features = time_model.predict(ins)
+        # extract the features for the last timestep since they are the most relevant for the next note generation
         note_features = np.array(note_features)[:, -1:, :]
 
-        # Generate each note conditioned on previous
+        # generate each note conditioned on previous notes
         for n in range(NUM_NOTES):
+            # for each timestep, each object prepares inputs needed for predicting the next note based on the last time step's note features and the current state of the generation
             ins = process_inputs([g.build_note_inputs(note_features[i, :, :, :]) for i, g in enumerate(generations)])
+            # predict the next note
             predictions = np.array(note_model.predict(ins))
-
+            # choose the next note
             for i, g in enumerate(generations):
-                # Remove the temporal dimension
+                # select the most relevant (latest) prediction output for the current note position, 
+                # removing the temporal dimension by focusing only on the current prediction without considering previous temporal steps
                 g.choose(predictions[i][-1], n)
 
-        # Move one time step
+        # finalize the generation process for the current timestep and prepare for the next,
+        # enabling real-time interactions 
         yield [g.end_time(t) for g in generations]
 
 def write_file(name, results):
     """
-    Takes a list of all notes generated per track and writes it to file
+    output the generated music to MIDI files:
+    take a list of all notes generated per track and writes it to file
     """
+
     results = zip(*list(results))
 
     for i, result in enumerate(results):
@@ -133,7 +177,13 @@ def write_file(name, results):
         mf = midi_encode(unclamp_midi(result))
         midi.write_midifile(fpath, mf)
 
+
+
 def main():
+    """
+    set up command-line argument parsing and drives the generation based on user inputs
+    """
+
     parser = argparse.ArgumentParser(description='Generates music.')
     parser.add_argument('--bars', default=32, type=int, help='Number of bars to generate')
     parser.add_argument('--styles', default=None, type=int, nargs='+', help='Styles to mix together')
@@ -141,11 +191,12 @@ def main():
 
     models = build_or_load()
 
-    styles = [compute_genre(i) for i in range(len(genre))]
-
+    # create a one-hot encoded vector for each style index, then take the mean of all the styles, resulting in a new vector where each element is the average of the corresponding elements in all the input vectors
+    # contain no specific logic to handle or remove duplicates before averaging
     if args.styles:
-        # Custom style
         styles = [np.mean([one_hot(i, NUM_STYLES) for i in args.styles], axis=0)]
+    else:
+        styles = [compute_genre(i) for i in range(len(genre))]
 
     write_file('output', generate(models, args.bars, styles))
 
