@@ -1,6 +1,4 @@
-# OP
-
-### Requirements
+## Requirement
 
 Setup package management:
 
@@ -26,7 +24,7 @@ pip install -r requirements.txt
 
 
 
-### Usage
+## Usage
 
 To train a new model, run the following command:
 
@@ -45,3 +43,9 @@ Use the help command to see CLI arguments:
 ```
 python generate.py --help
 ```
+
+
+
+## Reference
+
+Mao, H. H., Shin, T., & Cottrell, G. (2018). DeepJ: Style-Specific Music Generation. 2018 IEEE 12th International Conference on Semantic Computing (ICSC), 377–382. https://doi.org/10.1109/ICSC.2018.00077
